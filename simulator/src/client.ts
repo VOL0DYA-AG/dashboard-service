@@ -30,6 +30,16 @@ export class OpenRemote {
         }
       } catch (error) {
         last = describeError(error);
+        if (isBadPassword(last)) {
+          throw new Error(
+            `OpenRemote не принял пароль администратора. Впишите верный OR_ADMIN_PASSWORD в файл .env. Подробность: ${last}`,
+          );
+        }
+        if (isBadCertificate(last)) {
+          throw new Error(
+            `Сертификат OpenRemote самоподписанный. В .env должна быть строка NODE_TLS_REJECT_UNAUTHORIZED=0. Подробность: ${last}`,
+          );
+        }
       }
       console.log(`Жду Manager, попытка ${i}/${attempts}: ${last}`);
       await delay(5000);
@@ -152,4 +162,13 @@ export function describeError(error: unknown): string {
 
 export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isBadPassword(message: string): boolean {
+  if (message.includes("unauthorized_client")) return false;
+  return /HTTP 401|invalid_grant|Invalid user credentials/i.test(message);
+}
+
+function isBadCertificate(message: string): boolean {
+  return /CERT_|UNABLE_TO_VERIFY|SELF_SIGNED|DEPTH_ZERO/i.test(message);
 }

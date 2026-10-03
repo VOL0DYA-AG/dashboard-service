@@ -130,11 +130,21 @@ class RealApi implements CabinetApi {
       realm: config.realm,
       clientId: "openremote",
     });
-    const ok = await keycloak.init({
-      onLoad: "login-required",
-      pkceMethod: "S256",
-      checkLoginIframe: false,
-    });
+    let ok = false;
+    try {
+      ok = await keycloak.init({
+        onLoad: "login-required",
+        // На http://адрес:порт браузер не даёт crypto.subtle, а он нужен только для PKCE.
+        // Клиент openremote принимает вход и без него. По https PKCE включается сам.
+        pkceMethod: window.isSecureContext ? "S256" : undefined,
+        checkLoginIframe: false,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Не открылась страница входа ${origin}. Сначала откройте ${origin} в этом же браузере и подтвердите предупреждение о сертификате, затем обновите кабинет. Подробность: ${detail}`,
+      );
+    }
     if (!ok) throw new Error("Вход в OpenRemote не выполнен");
     const api = new RealApi(keycloak, config);
     api.openSocket();
@@ -142,7 +152,19 @@ class RealApi implements CabinetApi {
   }
 
   async load(): Promise<Plant> {
-    const assets = unwrapAssets(await this.json<unknown>("POST", `/api/${this.realm()}/asset/query`, {}));
+    let body: unknown;
+    try {
+      body = await this.json<unknown>("POST", `/api/${this.realm()}/asset/query`, {});
+    } catch (error) {
+      if (error instanceof TypeError) {
+        const where = this.config.managerUrl || "OpenRemote";
+        throw new Error(
+          `Браузер не смог спросить данные у ${where}. Откройте ${where} и подтвердите предупреждение о сертификате. Если сертификат уже принят, на сервере OpenRemote ещё не разрешён адрес этого кабинета.`,
+        );
+      }
+      throw error;
+    }
+    const assets = unwrapAssets(body);
     const plant = parsePlant(assets);
     if (!plant) {
       throw new Error("В realm нет котельной. Нужен актив с атрибутом cabinetKind = plant и дочерний котёл.");
@@ -208,6 +230,9 @@ class RealApi implements CabinetApi {
 
   private async json<T>(method: string, path: string, body?: unknown): Promise<T> {
     const response = await this.fetch(method, path, body);
+    if (response.status === 401 || response.status === 403) {
+      throw new Error("Вход есть, но OpenRemote не показал карточки котельной. На сервере кабинета ещё раз запустите шаг настройки.");
+    }
     if (!response.ok) throw new Error(`${method} ${path} → HTTP ${response.status}`);
     return response.json() as Promise<T>;
   }

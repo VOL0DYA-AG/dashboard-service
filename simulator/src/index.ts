@@ -2,8 +2,8 @@
  * Демо-контур котельной.
  *
  * 1. Создаёт realm, оператора и дерево активов, если их ещё нет.
- * 2. Разрешает вход кабинета с localhost и с порта разработки 9000.
- * 3. Каждые несколько секунд читает уставки и пишет измерения.
+ * 2. Разрешает вход с адреса кабинета (CABINET_URL).
+ * 3. Если SIM_LOOP=true, каждые несколько секунд читает уставки и пишет измерения.
  *    Уставки этот процесс не перезаписывает: их меняет человек в кабинете.
  */
 import {
@@ -29,34 +29,42 @@ const OPERATOR = process.env.OPERATOR_USER || "operator";
 const OPERATOR_PASSWORD = process.env.OPERATOR_PASSWORD || "operator";
 const INTERVAL_MS = Number(process.env.SIM_INTERVAL_MS || 5000);
 const STEP_MINUTES = Number(process.env.SIM_STEP_MINUTES || 1);
-const MANAGER_URL = (process.env.MANAGER_URL || "http://manager:8080").replace(/\/$/, "");
+const MANAGER_URL = (process.env.MANAGER_URL || "https://212.22.82.167").replace(/\/$/, "");
 const KEYCLOAK_URL = (process.env.KEYCLOAK_URL || `${MANAGER_URL}/auth`).replace(/\/$/, "");
 
 const or = new OpenRemote(MANAGER_URL, KEYCLOAK_URL);
 
 async function main(): Promise<void> {
-  console.log(`Симулятор котельной → ${MANAGER_URL}, realm ${REALM_NAME}`);
+  const password = process.env.OR_ADMIN_PASSWORD || "";
+  if (!password || password === "секрет-админа-этого-openremote") {
+    throw new Error("Скопируйте .env.example в .env и впишите настоящий пароль администратора OpenRemote в OR_ADMIN_PASSWORD.");
+  }
+  console.log(`Настройка котельной → ${MANAGER_URL}, область ${REALM_NAME}, кабинет ${cabinetOrigin()}`);
   await or.waitUntilReady();
+  await warnIfBrowserBlocked();
   const token = await or.adminToken();
   await ensureRealm(token);
   await ensureRedirects();
   const userId = await ensureOperator(token);
   const assets = await ensureAssets(token);
-  await ensureLinks(token, userId, assets.map((asset) => asset.id));
-  if (process.env.SIM_BACKFILL !== "false") {
+  await ensureLinks(token, userId, cabinetAssetIds(assets));
+  if (process.env.SIM_BACKFILL === "true") {
     await backfill(token, assets);
   }
   if (process.env.SIM_LOOP === "true") {
     await loop(token);
     return;
   }
-  console.log("Данные заведены. Цикл измерений выключен: живой контроллер пишет температуры сам. Демо-контур включается переменной SIM_LOOP=true.");
+  console.log("Данные заведены. Температуры скрипт не крутит: их будет писать контроллер котла.");
+  console.log(`Кабинет: ${cabinetOrigin()}/cabinet/`);
+  console.log(`Вход: ${OPERATOR} / пароль из OPERATOR_PASSWORD`);
+  await warnIfBrowserBlocked();
 }
 
 async function ensureRealm(token: string): Promise<void> {
   const realms = await or.json<Array<{ name?: string }>>(token, "GET", "/api/master/realm");
   if (realms.some((realm) => realm.name === REALM_NAME)) {
-    console.log(`Realm ${REALM_NAME} уже есть`);
+    console.log(`Область ${REALM_NAME} уже есть`);
     return;
   }
   await or.json(token, "POST", "/api/master/realm", {
@@ -68,11 +76,61 @@ async function ensureRealm(token: string): Promise<void> {
   await delay(2000);
 }
 
+function cabinetAssetIds(assets: RawAsset[]): string[] {
+  const plant = parsePlant(assets);
+  if (!plant) return assets.map((asset) => asset.id);
+  return [
+    plant.id,
+    plant.boiler.id,
+    ...plant.circuits.map((circuit) => circuit.id),
+    ...(plant.dhw ? [plant.dhw.id] : []),
+  ];
+}
+
+function cabinetOrigin(): string {
+  const raw = (process.env.CABINET_URL || "http://195.170.163.72:8090").trim();
+  const withScheme = raw.includes("://") ? raw : `http://${raw}`;
+  return new URL(withScheme).origin;
+}
+
+async function warnIfBrowserBlocked(): Promise<void> {
+  const origin = cabinetOrigin();
+  try {
+    const response = await fetch(`${MANAGER_URL}/api/master/info`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: origin,
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization,content-type",
+      },
+    });
+    const allow = response.headers.get("access-control-allow-origin");
+    if (allow === origin || allow === "*") {
+      console.log(`OpenRemote пускает браузер с адреса ${origin}.`);
+      return;
+    }
+    const text = (await response.text()).trim();
+    console.log("");
+    console.log(`ВНИМАНИЕ. Страница кабинета откроется, но данные из OpenRemote браузер не получит.`);
+    console.log(`OpenRemote отклонил адрес ${origin}${text ? `: ${text}` : ""}.`);
+    console.log("На сервере 212.22.82.167 у контейнера manager добавьте строку и перезапустите только его:");
+    console.log(`OR_WEBSERVER_ALLOWED_ORIGINS=${origin}`);
+    console.log("Если строка уже есть, допишите этот адрес через запятую. Знак * ставьте только один, без других адресов.");
+    console.log("");
+  } catch (error) {
+    console.log(`Не удалось проверить допуск браузера: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
 async function ensureRedirects(): Promise<void> {
-  const extra = (process.env.REDIRECT_URIS || "https://212.22.82.167/*,http://localhost:9000/*,http://localhost/*,https://localhost/*")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const origin = cabinetOrigin();
+  const extra = [
+    `${origin}/*`,
+    ...(process.env.REDIRECT_URIS || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  ];
   try {
     const admin = await or.keycloakAdminToken();
     const list = await keycloak<Array<Record<string, unknown>>>(
@@ -86,7 +144,7 @@ async function ensureRedirects(): Promise<void> {
       return;
     }
     const redirectUris = unique([...(asStrings(client.redirectUris)), ...extra]);
-    const webOrigins = unique([...(asStrings(client.webOrigins)), "+"]);
+    const webOrigins = unique([...(asStrings(client.webOrigins)), origin, "+"]);
     await keycloak(admin, "PUT", `/admin/realms/${REALM_NAME}/clients/${String(client.id)}`, {
       ...client,
       redirectUris,
