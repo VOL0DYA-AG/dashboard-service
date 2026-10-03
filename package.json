@@ -2,7 +2,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "tsx --test contract/plant.test.ts",
+    "test": "tsx --test contract/plant.test.ts ui/cabinet/src/login-random.test.ts",
     "dev": "npm --prefix ui/cabinet run dev:mock",
     "build": "npm --prefix ui/cabinet run build"
   },

@@ -1,4 +1,5 @@
 import Keycloak from "keycloak-js";
+import { ensureLoginRandom } from "./login-random";
 import {
   REALM,
   applyAttribute,
@@ -132,18 +133,16 @@ class RealApi implements CabinetApi {
     });
     let ok = false;
     try {
+      ensureLoginRandom();
       ok = await keycloak.init({
         onLoad: "login-required",
-        // На http://адрес:порт браузер не даёт crypto.subtle, а он нужен только для PKCE.
+        // На http://адрес:порт нет crypto.subtle, он нужен только для PKCE.
         // Клиент openremote принимает вход и без него. По https PKCE включается сам.
         pkceMethod: window.isSecureContext ? "S256" : undefined,
         checkLoginIframe: false,
       });
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `Не открылась страница входа ${origin}. Сначала откройте ${origin} в этом же браузере и подтвердите предупреждение о сертификате, затем обновите кабинет. Подробность: ${detail}`,
-      );
+      throw loginStartError(origin, error);
     }
     if (!ok) throw new Error("Вход в OpenRemote не выполнен");
     const api = new RealApi(keycloak, config);
@@ -280,6 +279,21 @@ class RealApi implements CabinetApi {
     this.plant = next;
     for (const listener of this.listeners) listener(next);
   }
+}
+
+function loginStartError(origin: string, error: unknown): Error {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (/Web Crypto API/i.test(detail)) {
+    return new Error(
+      "Браузер не подготовил вход: кабинет открыт по обычному http. Обновите сайт на сервере кабинета и откройте страницу заново.",
+    );
+  }
+  if (/failed to fetch|networkerror|load failed/i.test(detail)) {
+    return new Error(
+      `Не открылась страница входа ${origin}. Откройте ${origin} в этом же браузере, подтвердите предупреждение о сертификате и обновите кабинет.`,
+    );
+  }
+  return new Error(`Не открылась страница входа ${origin}. Подробность: ${detail}`);
 }
 
 function unwrap(value: unknown): unknown {

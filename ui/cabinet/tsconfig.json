@@ -18,5 +18,6 @@
       "@contract": ["../../contract/plant.ts"]
     }
   },
-  "include": ["src", "../../contract/plant.ts"]
+  "include": ["src", "../../contract/plant.ts"],
+  "exclude": ["src/**/*.test.ts"]
 }
