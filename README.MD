@@ -4,9 +4,82 @@
 
 OpenRemote здесь платформа: пользователи, права, активы, история и живые события. Кабинет сам котлом не управляет, он читает и пишет атрибуты Manager.
 
-## Быстрый запуск рядом с этим репозиторием
+Рабочий OpenRemote уже запущен по адресу `https://212.22.82.167`. Корень открывает `/manager/`, Keycloak доступен на `/auth`. Страницы `/cabinet/` там пока нет. Порт 8080 на этом сервере занят другим веб-сервисом: кабинет его не использует и второй OpenRemote не поднимает.
 
-Нужны Docker и свободные порты 80 и 443.
+Куда ходить за данными, записано в [ui/cabinet/public/config.json](ui/cabinet/public/config.json): `managerUrl` и `realm`. Файл читается при открытии страницы.
+
+## Запуск рядом с уже работающим OpenRemote
+
+На Linux-машине с Docker, с которой открывается `https://212.22.82.167`:
+
+```bash
+git clone -b cursor/boiler-cabinet-e92d https://github.com/VOL0DYA-AG/dashboard-service.git
+cd dashboard-service
+cp .env.example .env
+```
+
+В `.env` впишите пароль администратора этого OpenRemote в `OR_ADMIN_PASSWORD`. Адрес Manager уже стоит `https://212.22.82.167`.
+
+Один раз создать realm `boiler`, оператора и демо-котельную. Температуры этот запуск не крутит (`SIM_LOOP=false`), чтобы не затереть живые датчики. Пароль существующего оператора не сбрасывается, пока не поставить `RESET_OPERATOR_PASSWORD=true`.
+
+```bash
+docker run --rm --env-file .env -v "$PWD":/src -w /src node:22-alpine \
+  sh -c "npm install --prefix simulator && npm --prefix simulator start"
+```
+
+Дождитесь `Данные заведены`. Заодно в клиент Keycloak `openremote` добавляется редирект `https://212.22.82.167/*`.
+
+Соберите кабинет и положите его в уже запущенный Manager. Так страница и API на одном хосте, отдельные CORS не нужны.
+
+```bash
+npm --prefix ui/cabinet install
+npm --prefix ui/cabinet run build
+docker ps
+```
+
+Подставьте имя контейнера Manager:
+
+```bash
+docker exec ИМЯ_MANAGER mkdir -p /deployment/manager/app/cabinet
+docker cp ui/cabinet/dist/. ИМЯ_MANAGER:/deployment/manager/app/cabinet
+```
+
+Если `console_config.json` на сервере ещё нет и телефонная консоль должна открывать только кабинет:
+
+```bash
+docker cp deployment/manager/app/console_config.json ИМЯ_MANAGER:/deployment/manager/app/console_config.json
+```
+
+Если файл уже есть, не заменяйте его целиком. Допишите `cabinet` в `allowedApps` и блок `apps.cabinet` из репозитория.
+
+Откройте `https://212.22.82.167/cabinet/`. Логин оператора из `.env`, по умолчанию `operator` / `operator`, realm `boiler`.
+
+Корень `https://212.22.82.167/` по-прежнему ведёт в Manager. Жильцу отдавайте ссылку с `/cabinet/`.
+
+Если после копирования адрес отвечает 404, посмотрите `OR_CUSTOM_APP_DOCROOT` в контейнере. По умолчанию это `/deployment/manager/app`. Перезапуск нужен только если каталог появился впервые:
+
+```bash
+docker restart ИМЯ_MANAGER
+```
+
+### Кабинет отдельным сайтом
+
+Если в контейнер Manager файлы положить нельзя, отдайте сборку своим nginx на порту 8090:
+
+```bash
+docker compose -f docker-compose.web.yml up -d --build
+```
+
+Страница будет на `http://<хост-кабинета>:8090/cabinet/`. В `config.json` уже указан `https://212.22.82.167`. На самом OpenRemote тогда нужны два разрешения:
+
+- у клиента Keycloak `openremote` в realm `boiler` в Valid redirect URIs есть `http://<хост-кабинета>:8090/*`;
+- у Manager в `OR_WEBSERVER_ALLOWED_ORIGINS` есть `http://<хост-кабинета>:8090`, после правки Manager перезапускают.
+
+Копирование файлов в Manager этих шагов не требует.
+
+## Локальный стенд, когда своего OpenRemote нет
+
+Нужны свободные порты 80 и 443. На `212.22.82.167` эту команду не запускайте: она поднимет второй OpenRemote и займёт те же порты.
 
 ```bash
 cp .env.example .env
@@ -14,25 +87,7 @@ docker compose up -d --build
 docker compose logs -f simulator
 ```
 
-Дождитесь в логе симулятора строки `Контур запущен`. Первый старт Manager и Keycloak занимает несколько минут.
-
-Откройте `https://localhost/cabinet/` и примите самоподписанный сертификат прокси. Корень `https://localhost/` ведёт сюда же.
-
-Вход демона:
-
-- realm `boiler` подставится сам, отдельно его выбирать не нужно;
-- пользователь `operator`;
-- пароль `operator`.
-
-Администратор платформы, если понадобится служебный интерфейс: `https://localhost/manager/`, логин `admin`, пароль `secret`. В консоли на телефоне этот интерфейс скрыт.
-
-Остановить демо-контур, когда появится настоящий контроллер:
-
-```bash
-docker compose stop simulator
-```
-
-Пока симулятор запущен, он пишет измеренные температуры. Два писателя на одни и те же атрибуты будут спорить.
+Дождитесь `Контур запущен`. Кабинет локального стенда: `https://localhost/cabinet/`, оператор `operator` / `operator`. Демо-контур пишет температуры; перед боевым контроллером его останавливают: `docker compose stop simulator`.
 
 ## Что видит человек
 

@@ -25,9 +25,33 @@ export interface CabinetApi {
   subscribe(listener: (plant: Plant) => void): () => void;
 }
 
+export interface CabinetConfig {
+  managerUrl: string;
+  realm: string;
+}
+
+/** Адрес живого Manager. Пустая строка означает тот же хост, с которого открыт кабинет. */
+export async function loadConfig(): Promise<CabinetConfig> {
+  const fallback: CabinetConfig = {
+    managerUrl: (import.meta.env.VITE_MANAGER_URL || "").replace(/\/$/, ""),
+    realm: import.meta.env.VITE_REALM || REALM,
+  };
+  try {
+    const response = await fetch(`${import.meta.env.BASE_URL}config.json`, { cache: "no-store" });
+    if (!response.ok) return fallback;
+    const json = (await response.json()) as { managerUrl?: string; realm?: string };
+    return {
+      managerUrl: String(json.managerUrl ?? fallback.managerUrl).replace(/\/$/, ""),
+      realm: json.realm || fallback.realm,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 export async function createApi(): Promise<CabinetApi> {
   if (import.meta.env.VITE_MOCK === "true") return new MockApi();
-  return RealApi.connect();
+  return RealApi.connect(await loadConfig());
 }
 
 class MockApi implements CabinetApi {
@@ -92,15 +116,18 @@ class RealApi implements CabinetApi {
   private plant: Plant | null = null;
   private stopped = false;
 
-  private constructor(private readonly keycloak: Keycloak) {
+  private constructor(
+    private readonly keycloak: Keycloak,
+    private readonly config: CabinetConfig,
+  ) {
     this.username = keycloak.tokenParsed?.preferred_username || "operator";
   }
 
-  static async connect(): Promise<RealApi> {
-    const realm = import.meta.env.VITE_REALM || REALM;
+  static async connect(config: CabinetConfig): Promise<RealApi> {
+    const origin = config.managerUrl || window.location.origin;
     const keycloak = new Keycloak({
-      url: `${window.location.origin}/auth`,
-      realm,
+      url: `${origin}/auth`,
+      realm: config.realm,
       clientId: "openremote",
     });
     const ok = await keycloak.init({
@@ -109,7 +136,7 @@ class RealApi implements CabinetApi {
       checkLoginIframe: false,
     });
     if (!ok) throw new Error("Вход в OpenRemote не выполнен");
-    const api = new RealApi(keycloak);
+    const api = new RealApi(keycloak, config);
     api.openSocket();
     return api;
   }
@@ -153,7 +180,11 @@ class RealApi implements CabinetApi {
   }
 
   private realm(): string {
-    return import.meta.env.VITE_REALM || REALM;
+    return this.config.realm;
+  }
+
+  private url(path: string): string {
+    return `${this.config.managerUrl}${path}`;
   }
 
   private async token(): Promise<string> {
@@ -164,7 +195,7 @@ class RealApi implements CabinetApi {
 
   private async fetch(method: string, path: string, body?: unknown): Promise<Response> {
     const token = await this.token();
-    return fetch(path, {
+    return fetch(this.url(path), {
       method,
       headers: {
         Authorization: `Bearer ${token}`,
@@ -184,7 +215,8 @@ class RealApi implements CabinetApi {
   private openSocket(): void {
     if (this.stopped || this.socket?.readyState === WebSocket.OPEN || this.socket?.readyState === WebSocket.CONNECTING) return;
     void this.token().then((token) => {
-      const url = `${window.location.origin.replace(/^http/, "ws")}/websocket/events?Realm=${encodeURIComponent(this.realm())}`;
+      const origin = this.config.managerUrl || window.location.origin;
+      const url = `${origin.replace(/^http/, "ws")}/websocket/events?Realm=${encodeURIComponent(this.realm())}`;
       const socket = new WebSocket(url, ["Bearer", token]);
       this.socket = socket;
       socket.addEventListener("open", () => {

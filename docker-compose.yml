@@ -110,3 +110,4 @@ services:
       REDIRECT_URIS: http://localhost:9000/*,http://localhost/*,https://localhost/*,http://127.0.0.1:9000/*
       SIM_INTERVAL_MS: "5000"
       SIM_STEP_MINUTES: "1"
+      SIM_LOOP: "true"

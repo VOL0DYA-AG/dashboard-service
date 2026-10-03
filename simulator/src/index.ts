@@ -46,7 +46,11 @@ async function main(): Promise<void> {
   if (process.env.SIM_BACKFILL !== "false") {
     await backfill(token, assets);
   }
-  await loop(token);
+  if (process.env.SIM_LOOP === "true") {
+    await loop(token);
+    return;
+  }
+  console.log("Данные заведены. Цикл измерений выключен: живой контроллер пишет температуры сам. Демо-контур включается переменной SIM_LOOP=true.");
 }
 
 async function ensureRealm(token: string): Promise<void> {
@@ -65,7 +69,7 @@ async function ensureRealm(token: string): Promise<void> {
 }
 
 async function ensureRedirects(): Promise<void> {
-  const extra = (process.env.REDIRECT_URIS || "http://localhost:9000/*,http://localhost/*,https://localhost/*")
+  const extra = (process.env.REDIRECT_URIS || "https://212.22.82.167/*,http://localhost:9000/*,http://localhost/*,https://localhost/*")
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
@@ -100,11 +104,13 @@ async function ensureRedirects(): Promise<void> {
 async function ensureOperator(token: string): Promise<string> {
   const existing = await findUser(token, OPERATOR);
   const userId = existing ?? (await createUser(token));
-  await or.request(token, "PUT", `/api/master/user/${REALM_NAME}/reset-password/${userId}`, {
-    type: "password",
-    value: OPERATOR_PASSWORD,
-    temporary: false,
-  });
+  if (!existing || process.env.RESET_OPERATOR_PASSWORD === "true") {
+    await or.request(token, "PUT", `/api/master/user/${REALM_NAME}/reset-password/${userId}`, {
+      type: "password",
+      value: OPERATOR_PASSWORD,
+      temporary: false,
+    });
+  }
   await or.request(token, "PUT", `/api/master/user/${REALM_NAME}/userRealmRoles/${userId}`, ["restricted_user"]);
   const roles = await clientRoles(token);
   const wanted = ["read:assets", "write:attributes", "read:alarms"].filter((role) => roles.includes(role));
