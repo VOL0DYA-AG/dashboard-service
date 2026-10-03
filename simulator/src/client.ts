@@ -5,6 +5,8 @@
  */
 
 export class OpenRemote {
+  private cachedToken: { value: string; until: number } | null = null;
+
   constructor(
     private readonly managerUrl: string,
     private readonly keycloakUrl: string,
@@ -19,7 +21,13 @@ export class OpenRemote {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (response.ok) return;
-        last = `HTTP ${response.status} ${await response.text()}`;
+        const text = await response.text();
+        if ((response.status === 401 || response.status === 403) && (await this.allowPasswordGrant())) {
+          this.cachedToken = null;
+          last = "Включил прямой вход для клиента openremote, повторяю";
+        } else {
+          last = `HTTP ${response.status} ${text}`;
+        }
       } catch (error) {
         last = describeError(error);
       }
@@ -30,11 +38,36 @@ export class OpenRemote {
   }
 
   async adminToken(): Promise<string> {
+    if (this.cachedToken && this.cachedToken.until > Date.now()) return this.cachedToken.value;
+    const username = process.env.OR_ADMIN_USER || "admin";
+    const password = process.env.OR_ADMIN_PASSWORD || "secret";
+    try {
+      return this.remember(await this.passwordGrant("openremote", username, password));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (!message.includes("unauthorized_client")) throw error;
+    }
+    console.log("Клиент openremote не принимает пароль напрямую, вхожу через admin-cli");
+    return this.remember(await this.passwordGrant("admin-cli", username, password));
+  }
+
+  async keycloakAdminToken(): Promise<string> {
+    const username = process.env.OR_ADMIN_USER || "admin";
+    const password = process.env.OR_ADMIN_PASSWORD || "secret";
+    return this.passwordGrant("admin-cli", username, password);
+  }
+
+  private remember(token: string): string {
+    this.cachedToken = { value: token, until: Date.now() + 30_000 };
+    return token;
+  }
+
+  private async passwordGrant(clientId: string, username: string, password: string): Promise<string> {
     const body = new URLSearchParams({
-      client_id: "openremote",
+      client_id: clientId,
       grant_type: "password",
-      username: process.env.OR_ADMIN_USER || "admin",
-      password: process.env.OR_ADMIN_PASSWORD || "secret",
+      username,
+      password,
     });
     const response = await fetch(`${this.keycloakUrl}/realms/master/protocol/openid-connect/token`, {
       method: "POST",
@@ -42,29 +75,49 @@ export class OpenRemote {
       body,
     });
     if (!response.ok) {
-      throw new Error(`Токен администратора: HTTP ${response.status} ${await response.text()}`);
+      throw new Error(`Токен ${clientId}: HTTP ${response.status} ${await response.text()}`);
     }
     const json = (await response.json()) as { access_token: string };
     return json.access_token;
   }
 
-  async keycloakAdminToken(): Promise<string> {
-    const body = new URLSearchParams({
-      client_id: "admin-cli",
-      grant_type: "password",
-      username: process.env.OR_ADMIN_USER || "admin",
-      password: process.env.OR_ADMIN_PASSWORD || "secret",
-    });
-    const response = await fetch(`${this.keycloakUrl}/realms/master/protocol/openid-connect/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body,
-    });
-    if (!response.ok) {
-      throw new Error(`Токен admin-cli: HTTP ${response.status} ${await response.text()}`);
+  /** На боевом Keycloak у клиента openremote часто выключен Direct access grants. */
+  private async allowPasswordGrant(): Promise<boolean> {
+    try {
+      const admin = await this.keycloakAdminToken();
+      const list = await this.keycloakJson<Array<Record<string, unknown>>>(
+        admin,
+        "GET",
+        "/admin/realms/master/clients?clientId=openremote",
+      );
+      const client = list[0];
+      if (!client?.id || client.directAccessGrantsEnabled === true) return false;
+      await this.keycloakJson(admin, "PUT", `/admin/realms/master/clients/${String(client.id)}`, {
+        ...client,
+        directAccessGrantsEnabled: true,
+      });
+      console.log("Для клиента openremote включён прямой вход по паролю");
+      return true;
+    } catch (error) {
+      console.log(`Не удалось включить прямой вход: ${describeError(error)}`);
+      return false;
     }
-    const json = (await response.json()) as { access_token: string };
-    return json.access_token;
+  }
+
+  private async keycloakJson<T>(token: string, method: string, path: string, body?: unknown): Promise<T> {
+    const response = await fetch(`${this.keycloakUrl}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`${method} ${path} → HTTP ${response.status} ${text}`);
+    if (!text) return undefined as T;
+    return JSON.parse(text) as T;
   }
 
   async request(token: string, method: string, path: string, body?: unknown): Promise<Response> {
