@@ -27,6 +27,8 @@ docker run --rm --env-file .env -v "$PWD":/src -w /src node:22-alpine \
   sh -c "npm install --prefix simulator && npm --prefix simulator start"
 ```
 
+В `.env` адреса должны быть с `https://`, не с `http://`. Сертификат на этом IP самоподписанный, поэтому в том же файле нужна строка `NODE_TLS_REJECT_UNAUTHORIZED=0`. Без неё Node обрывает соединение и в логе остаётся только `fetch failed`.
+
 Дождитесь `Данные заведены`. Заодно в клиент Keycloak `openremote` добавляется редирект `https://212.22.82.167/*`.
 
 Соберите кабинет и положите его в уже запущенный Manager. Так страница и API на одном хосте, отдельные CORS не нужны.

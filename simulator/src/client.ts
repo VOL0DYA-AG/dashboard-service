@@ -21,7 +21,7 @@ export class OpenRemote {
         if (response.ok) return;
         last = `HTTP ${response.status} ${await response.text()}`;
       } catch (error) {
-        last = error instanceof Error ? error.message : String(error);
+        last = describeError(error);
       }
       console.log(`Жду Manager, попытка ${i}/${attempts}: ${last}`);
       await delay(5000);
@@ -88,6 +88,13 @@ export class OpenRemote {
     if (!text) return undefined as T;
     return JSON.parse(text) as T;
   }
+}
+
+export function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = error.cause as { code?: string; message?: string } | undefined;
+  const detail = cause?.code || cause?.message;
+  return detail ? `${error.message}: ${detail}` : error.message;
 }
 
 export function delay(ms: number): Promise<void> {
