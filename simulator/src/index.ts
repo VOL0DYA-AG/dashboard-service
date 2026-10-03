@@ -27,6 +27,7 @@ const REALM_NAME = process.env.CABINET_REALM || REALM;
 const PLANT = process.env.PLANT_NAME || PLANT_NAME;
 const OPERATOR = process.env.OPERATOR_USER || "operator";
 const OPERATOR_PASSWORD = process.env.OPERATOR_PASSWORD || "operator";
+const SETUP_USER = "cabinet-setup";
 const INTERVAL_MS = Number(process.env.SIM_INTERVAL_MS || 5000);
 const STEP_MINUTES = Number(process.env.SIM_STEP_MINUTES || 1);
 const MANAGER_URL = (process.env.MANAGER_URL || "https://212.22.82.167").replace(/\/$/, "");
@@ -46,13 +47,14 @@ async function main(): Promise<void> {
   await ensureRealm(token);
   await ensureRedirects();
   const userId = await ensureOperator(token);
-  const assets = await ensureAssets(token);
-  await ensureLinks(token, userId, cabinetAssetIds(assets));
+  const realmToken = await ensureRealmWriter(token);
+  const assets = await ensureAssets(realmToken);
+  await ensureLinks(realmToken, userId, cabinetAssetIds(assets));
   if (process.env.SIM_BACKFILL === "true") {
-    await backfill(token, assets);
+    await backfill(realmToken, assets);
   }
   if (process.env.SIM_LOOP === "true") {
-    await loop(token);
+    await loop(realmToken);
     return;
   }
   console.log("Данные заведены. Температуры скрипт не крутит: их будет писать контроллер котла.");
@@ -143,7 +145,7 @@ async function ensureRedirects(): Promise<void> {
       console.log("Клиент openremote в Keycloak не найден, редиректы не обновлены");
       return;
     }
-    const redirectUris = unique([...(asStrings(client.redirectUris)), ...extra]);
+    const redirectUris = unique([...(asStrings(client.redirectUris)), ...extra]).filter(isHttpRedirect);
     const webOrigins = unique([...(asStrings(client.webOrigins)), origin, "+"]);
     await keycloak(admin, "PUT", `/admin/realms/${REALM_NAME}/clients/${String(client.id)}`, {
       ...client,
@@ -161,13 +163,9 @@ async function ensureRedirects(): Promise<void> {
 
 async function ensureOperator(token: string): Promise<string> {
   const existing = await findUser(token, OPERATOR);
-  const userId = existing ?? (await createUser(token));
+  const userId = existing ?? (await createUser(token, OPERATOR, "Оператор", "Котельной", "operator@localhost"));
   if (!existing || process.env.RESET_OPERATOR_PASSWORD === "true") {
-    await or.request(token, "PUT", `/api/master/user/${REALM_NAME}/reset-password/${userId}`, {
-      type: "password",
-      value: OPERATOR_PASSWORD,
-      temporary: false,
-    });
+    await setPassword(token, userId, OPERATOR_PASSWORD);
   }
   await or.request(token, "PUT", `/api/master/user/${REALM_NAME}/userRealmRoles/${userId}`, ["restricted_user"]);
   const roles = await clientRoles(token);
@@ -176,8 +174,69 @@ async function ensureOperator(token: string): Promise<string> {
     throw new Error(`В клиенте openremote нет нужных ролей. Есть: ${roles.join(", ")}`);
   }
   await or.request(token, "PUT", `/api/master/user/${REALM_NAME}/userRoles/${userId}/openremote`, wanted);
+  await confirmOperatorPassword(token, userId);
   console.log(`Оператор ${OPERATOR} готов, роли: ${wanted.join(", ")}`);
   return userId;
+}
+
+async function confirmOperatorPassword(token: string, userId: string): Promise<void> {
+  const first = await or.checkRealmPassword(REALM_NAME, OPERATOR, OPERATOR_PASSWORD);
+  if (first === "ok") {
+    console.log(`Пароль ${OPERATOR} из .env подходит`);
+    return;
+  }
+  if (first === "no-grant") {
+    throw new Error(
+      `Область ${REALM_NAME} не принимает вход по паролю. Клиент openremote должен разрешать Direct access grants.`,
+    );
+  }
+  console.log(`Пароль ${OPERATOR} не подходит, записываю значение из .env заново`);
+  await setPassword(token, userId, OPERATOR_PASSWORD);
+  await delay(1000);
+  const second = await or.checkRealmPassword(REALM_NAME, OPERATOR, OPERATOR_PASSWORD);
+  if (second !== "ok") {
+    throw new Error(
+      `OpenRemote не принял пароль ${OPERATOR} после записи. В кабинет нужно входить этим пользователем в области ${REALM_NAME}, не паролем администратора.`,
+    );
+  }
+  console.log(`Пароль ${OPERATOR} записан заново`);
+}
+
+/** Пользователь области boiler, которым можно создавать карточки. Токен администратора master туда не пускает. */
+async function ensureRealmWriter(token: string): Promise<string> {
+  const password = process.env.OR_ADMIN_PASSWORD || "";
+  let userId = await findUser(token, SETUP_USER);
+  if (!userId) {
+    userId = await createUser(token, SETUP_USER, "Настройка", "Кабинета", "cabinet-setup@localhost");
+  }
+  await setPassword(token, userId, password);
+  const roles = await clientRoles(token);
+  const wanted = ["read:assets", "write:assets", "write:attributes"].filter((role) => roles.includes(role));
+  if (!wanted.includes("read:assets") || !wanted.includes("write:assets")) {
+    throw new Error(`В клиенте openremote нет роли записи карточек. Есть: ${roles.join(", ")}`);
+  }
+  const roleResponse = await or.request(token, "PUT", `/api/master/user/${REALM_NAME}/userRoles/${userId}/openremote`, wanted);
+  if (!roleResponse.ok) {
+    throw new Error(`Роли для карточек не записались: HTTP ${roleResponse.status} ${await roleResponse.text()}`);
+  }
+  await delay(1000);
+  const check = await or.checkRealmPassword(REALM_NAME, SETUP_USER, password);
+  if (check !== "ok") {
+    throw new Error(`Не удалось войти в область ${REALM_NAME}, чтобы создать карточки котельной: ${check}`);
+  }
+  console.log(`Вход в область ${REALM_NAME} для карточек получен`);
+  return or.realmPassword(REALM_NAME, SETUP_USER, password);
+}
+
+async function setPassword(token: string, userId: string, password: string): Promise<void> {
+  const response = await or.request(token, "PUT", `/api/master/user/${REALM_NAME}/reset-password/${userId}`, {
+    type: "password",
+    value: password,
+    temporary: false,
+  });
+  if (!response.ok) {
+    throw new Error(`Пароль не записался: HTTP ${response.status} ${await response.text()}`);
+  }
 }
 
 async function findUser(token: string, username: string): Promise<string | null> {
@@ -207,15 +266,21 @@ async function findUser(token: string, username: string): Promise<string | null>
   }
 }
 
-async function createUser(token: string): Promise<string> {
+async function createUser(
+  token: string,
+  username: string,
+  firstName: string,
+  lastName: string,
+  email: string,
+): Promise<string> {
   const created = await or.json<{ id: string }>(token, "POST", `/api/master/user/${REALM_NAME}/users`, {
-    username: OPERATOR,
-    firstName: "Оператор",
-    lastName: "Котельной",
-    email: "operator@localhost",
+    username,
+    firstName,
+    lastName,
+    email,
     enabled: true,
   });
-  console.log(`Создан пользователь ${OPERATOR}`);
+  console.log(`Создан пользователь ${username}`);
   return created.id;
 }
 
@@ -290,7 +355,7 @@ async function loop(token: string): Promise<void> {
   console.log(`Контур запущен, шаг ${INTERVAL_MS} мс`);
   for (;;) {
     try {
-      token = await or.adminToken();
+      token = await or.realmPassword(REALM_NAME, SETUP_USER, process.env.OR_ADMIN_PASSWORD || "");
       const remote = parsePlant(await loadAssets(token));
       if (!remote) throw new Error("Активы котельной пропали из realm");
       const applied = applyControls(local, remote);
@@ -347,6 +412,10 @@ function asStrings(value: unknown): string[] {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function isHttpRedirect(value: string): boolean {
+  return value.startsWith("http://") || value.startsWith("https://");
 }
 
 main().catch((error) => {

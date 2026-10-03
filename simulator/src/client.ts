@@ -52,19 +52,19 @@ export class OpenRemote {
     const username = process.env.OR_ADMIN_USER || "admin";
     const password = process.env.OR_ADMIN_PASSWORD || "secret";
     try {
-      return this.remember(await this.passwordGrant("openremote", username, password));
+      return this.remember(await this.passwordGrant("master", "openremote", username, password));
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
       if (!message.includes("unauthorized_client")) throw error;
     }
     console.log("Клиент openremote не принимает пароль напрямую, вхожу через admin-cli");
-    return this.remember(await this.passwordGrant("admin-cli", username, password));
+    return this.remember(await this.passwordGrant("master", "admin-cli", username, password));
   }
 
   async keycloakAdminToken(): Promise<string> {
     const username = process.env.OR_ADMIN_USER || "admin";
     const password = process.env.OR_ADMIN_PASSWORD || "secret";
-    return this.passwordGrant("admin-cli", username, password);
+    return this.passwordGrant("master", "admin-cli", username, password);
   }
 
   private remember(token: string): string {
@@ -72,20 +72,46 @@ export class OpenRemote {
     return token;
   }
 
-  private async passwordGrant(clientId: string, username: string, password: string): Promise<string> {
+  /** Токен области. У OpenRemote 1.31 токен master не действует на /api/boiler. */
+  async realmPassword(realm: string, username: string, password: string): Promise<string> {
+    return this.passwordGrant(realm, "openremote", username, password);
+  }
+
+  /**
+   * ok — пароль принят.
+   * bad-password — пользователь есть, пароль не тот.
+   * no-grant — клиент не принимает вход по паролю.
+   */
+  async checkRealmPassword(
+    realm: string,
+    username: string,
+    password: string,
+  ): Promise<"ok" | "bad-password" | "no-grant"> {
+    try {
+      await this.realmPassword(realm, username, password);
+      return "ok";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("unauthorized_client")) return "no-grant";
+      if (isBadPassword(message)) return "bad-password";
+      throw error;
+    }
+  }
+
+  private async passwordGrant(realm: string, clientId: string, username: string, password: string): Promise<string> {
     const body = new URLSearchParams({
       client_id: clientId,
       grant_type: "password",
       username,
       password,
     });
-    const response = await fetch(`${this.keycloakUrl}/realms/master/protocol/openid-connect/token`, {
+    const response = await fetch(`${this.keycloakUrl}/realms/${encodeURIComponent(realm)}/protocol/openid-connect/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
     });
     if (!response.ok) {
-      throw new Error(`Токен ${clientId}: HTTP ${response.status} ${await response.text()}`);
+      throw new Error(`Токен ${realm}/${clientId}: HTTP ${response.status} ${await response.text()}`);
     }
     const json = (await response.json()) as { access_token: string };
     return json.access_token;
