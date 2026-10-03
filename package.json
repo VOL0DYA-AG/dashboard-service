@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test contract/plant.test.ts",
+    "dev": "npm --prefix ui/cabinet run dev:mock",
+    "build": "npm --prefix ui/cabinet run build"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.5"
+  }
+}

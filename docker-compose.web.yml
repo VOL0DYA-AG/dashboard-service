@@ -1,0 +1,11 @@
+# Только кабинет. OpenRemote уже запущен на https://212.22.82.167
+# и этим файлом не поднимается. Порт 8080 на том сервере занят другим веб-сервисом.
+
+services:
+  cabinet:
+    build:
+      context: .
+      dockerfile: ui/cabinet/Dockerfile.nginx
+    ports:
+      - "8090:80"
+    restart: unless-stopped
