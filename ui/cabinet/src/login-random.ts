@@ -25,6 +25,11 @@ export function formatUuid(bytes: Uint8Array): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/** На обычном http нет crypto.subtle. Keycloak по умолчанию всё равно включает PKCE, его надо выключить явно. */
+export function choosePkceMethod(canHash: boolean): "S256" | false {
+  return canHash ? "S256" : false;
+}
+
 function randomUuidWorks(webCrypto: Crypto): boolean {
   try {
     return typeof webCrypto.randomUUID === "function" && webCrypto.randomUUID().includes("-");

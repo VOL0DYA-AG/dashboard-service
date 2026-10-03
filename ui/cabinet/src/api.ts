@@ -1,5 +1,5 @@
 import Keycloak from "keycloak-js";
-import { ensureLoginRandom } from "./login-random";
+import { choosePkceMethod, ensureLoginRandom } from "./login-random";
 import {
   REALM,
   applyAttribute,
@@ -136,9 +136,8 @@ class RealApi implements CabinetApi {
       ensureLoginRandom();
       ok = await keycloak.init({
         onLoad: "login-required",
-        // На http://адрес:порт нет crypto.subtle, он нужен только для PKCE.
-        // Клиент openremote принимает вход и без него. По https PKCE включается сам.
-        pkceMethod: window.isSecureContext ? "S256" : undefined,
+        // undefined оставляет у Keycloak значение по умолчанию S256, и на http вход падает.
+        pkceMethod: choosePkceMethod(window.isSecureContext && typeof crypto.subtle !== "undefined"),
         checkLoginIframe: false,
       });
     } catch (error) {
