@@ -1,0 +1,18 @@
+{
+  "showAppTextInput": false,
+  "showRealmTextInput": false,
+  "app": "cabinet",
+  "allowedApps": ["cabinet"],
+  "apps": {
+    "cabinet": {
+      "consoleAppIncompatible": false,
+      "realms": ["boiler"],
+      "providers": ["storage"],
+      "description": "Личный кабинет котельной"
+    },
+    "manager": {
+      "consoleAppIncompatible": true,
+      "description": "Служебный интерфейс OpenRemote"
+    }
+  }
+}
