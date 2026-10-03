@@ -1,0 +1,29 @@
+# Только личный кабинет котельной.
+# OpenRemote здесь не запускается: он уже стоит на https://212.22.82.167
+# Сайт кабинета: http://195.170.163.72:8090/cabinet/
+# Порты 80 и 443 на сервере кабинета заняты, поэтому снаружи открыт 8090.
+
+services:
+  cabinet:
+    build:
+      context: .
+      dockerfile: ui/cabinet/Dockerfile.nginx
+    ports:
+      - "${CABINET_PORT:-8090}:80"
+    environment:
+      MANAGER_URL: ${MANAGER_URL:-https://212.22.82.167}
+      CABINET_REALM: ${CABINET_REALM:-boiler}
+    restart: unless-stopped
+
+  # Один раз создаёт область, оператора и карточки котельной на уже работающем OpenRemote.
+  # Запуск: docker compose --profile seed run --rm --build seed
+  seed:
+    build:
+      context: .
+      dockerfile: simulator/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    profiles:
+      - seed
+    restart: "no"

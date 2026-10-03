@@ -1,0 +1,6 @@
+node_modules/
+dist/
+ui/cabinet/dist/
+.env
+*.log
+.DS_Store
